@@ -21,11 +21,12 @@
 #define SB_FREE_LIST_OFF 4092
 
 #define INODE_TYPE_OFF 0
-#define INODE_MODE_OFF 4
-#define INODE_NLINK_OFF 6
-#define INODE_UID_OFF 8
-#define INODE_GID_OFF 12
-#define INODE_RDEV_OFF 16
+#define INODE_MODE_OFF 4      // uint16_t
+#define INODE_NLINK_OFF 6     // uint16_t
+#define INODE_UID_OFF 8       // uint32_t
+#define INODE_GID_OFF 12      // uint32_t
+#define INODE_RDEV_OFF 16     // uint32_t
+#define INODE_FLAGS_OFF 20    // uint32_t
 #define INODE_ATIME_S_OFF 24
 #define INODE_ATIME_N_OFF 28
 #define INODE_MTIME_S_OFF 32
@@ -54,10 +55,16 @@
 #define DIRENT_NAME_OFF 6
 #define DIRENT_MIN_LEN 7
 
+
 static inline uint16_t read16(const unsigned char *buf, int off) {
-    
-    return (uint16_t)buf[off] | ((uint16_t)buf[off+1] << 8);
+    return (uint16_t)buf[off] | ((uint16_t)buf[off + 1] << 8);
 }
+
+static inline void write16(unsigned char *buf, int off, uint16_t v) {
+    buf[off] = (unsigned char)(v & 0xff);
+    buf[off + 1] = (unsigned char)((v >> 8) & 0xff);
+}
+
 
 static inline uint32_t read32(const unsigned char *buf, int off) {
     return (uint32_t)buf[off]
@@ -71,10 +78,6 @@ static inline uint64_t read64(const unsigned char *buf, int off) {
     return (uint64_t)read32(buf, off) | ((uint64_t)read32(buf, off+4) << 32);
 }
 
-static inline void write16(unsigned char *buf, int off, uint16_t v) {
-    buf[off] = (unsigned char)(v & 0xff);
-    buf[off+1] = (unsigned char)((v >> 8) & 0xff);
-}
 
 static inline void write32(unsigned char *buf, int off, uint32_t v) {
    
@@ -290,10 +293,10 @@ static int remove_dir_entry(struct fs_state *st, uint32_t dir_block, const char 
 }
 
 static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *name, uint32_t inode_block) {
-
     unsigned char blk[BLOCK_SIZE];
     int name_len = (int)strlen(name);
     int entry_len = DIRENT_NAME_OFF + name_len;
+    entry_len = (entry_len + 3) & ~3;
 
     uint32_t curr = dir_block;
     uint32_t prev_block = dir_block;
@@ -308,41 +311,34 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
         int pos = content_off;
         int end = content_off + content_len;
 
-        /* find end of existing enttries */
         while (pos + DIRENT_MIN_LEN <= end) {
             uint16_t elen = read16(blk, pos + DIRENT_LEN_OFF);
-
             if (elen == 0) {
                 break;
             }
-
             if (pos + elen > end) {
                 break;
             }
-
             pos += elen;
         }
 
         if (pos + entry_len <= end) {
-
             write16(blk, pos + DIRENT_LEN_OFF, (uint16_t)entry_len);
             write32(blk, pos + DIRENT_INODE_OFF, inode_block);
             memcpy(blk + pos + DIRENT_NAME_OFF, name, name_len);
 
-            /* mark next entry as end-of-directory if there is room */
             if (pos + entry_len + 2 <= end) {
                 write16(blk, pos + entry_len, 0);
             }
 
             writeblock(st->fd, blk, curr);
 
-            /* update dir inode size and timpestamp */
             unsigned char iblk[BLOCK_SIZE];
             readblock(st->fd, iblk, dir_block);
             uint64_t dir_size = read64(iblk, INODE_SIZE_OFF);
             dir_size += entry_len;
             write64(iblk, INODE_SIZE_OFF, dir_size);
-            
+
             struct timespec ts;
             get_current_time(&ts);
             write32(iblk, INODE_MTIME_S_OFF, (uint32_t)ts.tv_sec);
@@ -358,7 +354,6 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
         is_inode = 0;
     }
 
-    /* need new extents block */
     uint32_t new_blk_num = allocate_block(st);
     unsigned char new_blk[BLOCK_SIZE];
     memset(new_blk, 0, BLOCK_SIZE);
@@ -373,18 +368,13 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
 
     writeblock(st->fd, new_blk, new_blk_num);
 
-    /* link prev to new extents */
     unsigned char prev_blk[BLOCK_SIZE];
     readblock(st->fd, prev_blk, prev_block);
-
-    /* if prev block is in inode or extents */
     uint32_t prev_type = read32(prev_blk, 0);
     int prev_next_off = (prev_type == TYPE_INODE) ? INODE_NEXT_EXT_OFF : DEXT_NEXT_EXT_OFF;
-
     write32(prev_blk, prev_next_off, new_blk_num);
     writeblock(st->fd, prev_blk, prev_block);
 
-    /* update dir inode */
     unsigned char iblk[BLOCK_SIZE];
     readblock(st->fd, iblk, dir_block);
     uint64_t dir_size = read64(iblk, INODE_SIZE_OFF);
@@ -403,7 +393,6 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
     writeblock(st->fd, iblk, dir_block);
 
     return 0;
-
 }
 
 /* read only functions */
@@ -438,11 +427,11 @@ static int fs_getattr(void *arg, uint32_t block_num, struct stat *stbuf) {
 
     memset(stbuf, 0, sizeof(struct stat));
 
-    stbuf->st_mode = (mode_t)read16(buf, INODE_MODE_OFF);
+    stbuf->st_mode  = (mode_t)read16(buf, INODE_MODE_OFF);
     stbuf->st_nlink = (nlink_t)read16(buf, INODE_NLINK_OFF);
-    stbuf->st_uid = (uid_t)read32(buf, INODE_UID_OFF);
-    stbuf->st_gid = (gid_t)read32(buf, INODE_GID_OFF);
-    stbuf->st_rdev = (dev_t)read32(buf, INODE_RDEV_OFF);
+    stbuf->st_uid   = (uid_t)read32(buf, INODE_UID_OFF);
+    stbuf->st_gid   = (gid_t)read32(buf, INODE_GID_OFF);
+    stbuf->st_rdev  = (dev_t)read32(buf, INODE_RDEV_OFF);
     stbuf->st_size = (off_t)read64(buf, INODE_SIZE_OFF);
     stbuf->st_blocks = (blkcnt_t)read32(buf, INODE_BLOCKS_OFF) * 8;
     
@@ -455,8 +444,8 @@ static int fs_getattr(void *arg, uint32_t block_num, struct stat *stbuf) {
     return 0;
 }
 
-static void parse_dir_entries(const unsigned char *buf, int content_off, int content_len, void *cbarg, CPE453_readdir_callback_t cb) {
-    
+static void parse_dir_entries(const unsigned char *buf, int content_off, int content_len,
+                              void *cbarg, CPE453_readdir_callback_t cb) {
     int pos = content_off;
     int end = content_off + content_len;
 
@@ -475,15 +464,16 @@ static void parse_dir_entries(const unsigned char *buf, int content_off, int con
         int name_len = entry_len - DIRENT_NAME_OFF;
 
         if (name_len > 0 && inode_block != 0) {
-            
             char *name = (char *)malloc(name_len + 1);
             memcpy(name, buf + pos + DIRENT_NAME_OFF, name_len);
             name[name_len] = '\0';
-            
-            cb(cbarg, name, inode_block);
+
+            if (strcmp(name, ".") != 0 && strcmp(name, "..") != 0) {
+                cb(cbarg, name, inode_block);
+            }
+
             free(name);
         }
-
 
         pos += entry_len;
     }
@@ -710,12 +700,12 @@ static int fs_utimens(void *arg, uint32_t block_num, const struct timespec tv[2]
 static int fs_rmdir(void *arg, uint32_t block_num, const char *name) {
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
- 
+
     uint32_t target = find_in_dir(st, block_num, name);
     if (target == 0) {
         return -ENOENT;
     }
- 
+
     readblock(st->fd, buf, target);
 
     if (read32(buf, INODE_TYPE_OFF) != TYPE_INODE) {
@@ -726,11 +716,39 @@ static int fs_rmdir(void *arg, uint32_t block_num, const char *name) {
         return -ENOTDIR;
     }
 
-    if (read64(buf, INODE_SIZE_OFF) != 0) {
+    int count = 0;
+    uint32_t curr = target;
+    int is_inode = 1;
+
+    while (curr != 0) {
+        unsigned char blk[BLOCK_SIZE];
+        readblock(st->fd, blk, curr);
+
+        int content_off = is_inode ? INODE_CONTENTS_OFF : DEXT_CONTENTS_OFF;
+        int next_off = is_inode ? INODE_NEXT_EXT_OFF : DEXT_NEXT_EXT_OFF;
+        int pos = content_off;
+        int end = next_off;
+
+        while (pos + DIRENT_MIN_LEN <= end) {
+            uint16_t len = read16(blk, pos);
+            if (len == 0) {
+                break;
+            }
+            if (pos + len > end) {
+                break;
+            }
+            count++;
+            pos += len;
+        }
+
+        curr = read32(blk, next_off);
+        is_inode = 0;
+    }
+
+    if (count > 2) {
         return -ENOTEMPTY;
-    } 
- 
-    /* free all directory extent blocks */
+    }
+
     uint32_t next_ext = read32(buf, INODE_NEXT_EXT_OFF);
     while (next_ext != 0) {
         unsigned char ext_blk[BLOCK_SIZE];
@@ -739,9 +757,9 @@ static int fs_rmdir(void *arg, uint32_t block_num, const char *name) {
         free_block(st, next_ext);
         next_ext = next_next;
     }
+
     free_block(st, target);
- 
-    /* decrement parent nlink */
+
     unsigned char parent_buf[BLOCK_SIZE];
     readblock(st->fd, parent_buf, block_num);
     uint16_t pnlink = read16(parent_buf, INODE_NLINK_OFF);
@@ -749,13 +767,15 @@ static int fs_rmdir(void *arg, uint32_t block_num, const char *name) {
         pnlink--;
     }
     write16(parent_buf, INODE_NLINK_OFF, pnlink);
-    struct timespec ts; 
-    get_current_time(&ts);
 
+    struct timespec ts;
+    get_current_time(&ts);
     write32(parent_buf, INODE_CTIME_S_OFF, (uint32_t)ts.tv_sec);
     write32(parent_buf, INODE_CTIME_N_OFF, (uint32_t)ts.tv_nsec);
+    write32(parent_buf, INODE_MTIME_S_OFF, (uint32_t)ts.tv_sec);
+    write32(parent_buf, INODE_MTIME_N_OFF, (uint32_t)ts.tv_nsec);
     writeblock(st->fd, parent_buf, block_num);
- 
+
     return remove_dir_entry(st, block_num, name);
 }
 
@@ -763,33 +783,35 @@ static int fs_rmdir(void *arg, uint32_t block_num, const char *name) {
 static int fs_unlink(void *arg, uint32_t block_num, const char *name) {
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
- 
+
     uint32_t target = find_in_dir(st, block_num, name);
     if (target == 0) {
         return -ENOENT;
     }
- 
+
     readblock(st->fd, buf, target);
     if (read32(buf, INODE_TYPE_OFF) != TYPE_INODE) {
         return -ENOENT;
     }
- 
+
+    if (S_ISDIR(read16(buf, INODE_MODE_OFF))) {
+        return -EISDIR;
+    }
+
     uint16_t nlink = read16(buf, INODE_NLINK_OFF);
     if (nlink > 0) {
         nlink--;
     }
 
     write16(buf, INODE_NLINK_OFF, nlink);
- 
-    struct timespec ts; 
-    get_current_time(&ts);
 
+    struct timespec ts;
+    get_current_time(&ts);
     write32(buf, INODE_CTIME_S_OFF, (uint32_t)ts.tv_sec);
     write32(buf, INODE_CTIME_N_OFF, (uint32_t)ts.tv_nsec);
     writeblock(st->fd, buf, target);
- 
+
     if (nlink == 0) {
-        /* free all file extent blocks */
         uint32_t next_ext = read32(buf, INODE_NEXT_EXT_OFF);
         while (next_ext != 0) {
             unsigned char ext_blk[BLOCK_SIZE];
@@ -801,10 +823,9 @@ static int fs_unlink(void *arg, uint32_t block_num, const char *name) {
 
         free_block(st, target);
     }
- 
+
     return remove_dir_entry(st, block_num, name);
 }
-
 
 /* helper: initialise a new inode block */
 static void init_inode(unsigned char *buf, mode_t mode, dev_t rdev, uid_t uid, gid_t gid) {
@@ -843,11 +864,11 @@ static int fs_mknod(void *arg, uint32_t parent_block, const char *name, mode_t n
     uint32_t new_block = allocate_block(st);
     init_inode(buf, new_mode, new_dev, uid, gid);
     write16(buf, INODE_NLINK_OFF, 1);
+    write64(buf, INODE_SIZE_OFF, 0);
     writeblock(st->fd, buf, new_block);
 
     return add_dir_entry(st, parent_block, name, new_block);
 }
-
 
 static int fs_symlink(void *arg, uint32_t parent_block, const char *name, const char *link_dest) {
     struct fs_state *st = (struct fs_state *)arg;
@@ -895,6 +916,9 @@ static int fs_mkdir(void *arg, uint32_t parent_block, const char *name, mode_t n
     write16(buf, INODE_NLINK_OFF, 2);
     write64(buf, INODE_SIZE_OFF, 0);
     writeblock(st->fd, buf, new_block);
+
+    add_dir_entry(st, new_block, ".", new_block);
+    add_dir_entry(st, new_block, "..", parent_block);
 
     readblock(st->fd, parent_buf, parent_block);
     uint16_t pnlink = read16(parent_buf, INODE_NLINK_OFF);
@@ -952,7 +976,10 @@ static int fs_rename(void *arg, uint32_t old_parent, const char *old_name, uint3
 
     uint32_t existing = find_in_dir(st, new_parent, new_name);
     if (existing != 0) {
-        return -EEXIST;
+        int res = fs_unlink(arg, new_parent, new_name);
+        if (res < 0) {
+            return res;
+        }
     }
 
     int res = add_dir_entry(st, new_parent, new_name, target);
