@@ -20,22 +20,20 @@
 #define SB_ROOT_INODE_OFF 4088
 #define SB_FREE_LIST_OFF 4092
 
-/* Inode offsets - verified against block_dump hex output */
-#define INODE_TYPE_OFF 0  /* uint32 */
-#define INODE_MODE_OFF  4  /* uint16 */
-#define INODE_NLINK_OFF 6  /* uint16 */
-#define INODE_UID_OFF 8 /* uint16 */
-#define INODE_GID_OFF 10 /* uint16 */
-#define INODE_RDEV_OFF 12 /* uint32 */
-#define INODE_FLAGS_OFF 16  /* uint32 */
-#define INODE_ATIME_S_OFF 24  /* uint32 */
-#define INODE_ATIME_N_OFF 28  /* uint32 */
-#define INODE_MTIME_S_OFF 32  /* uint32 */
-#define INODE_MTIME_N_OFF 36  /* uint32 */
-#define INODE_CTIME_S_OFF 40  /* uint32 */
-#define INODE_CTIME_N_OFF 44  /* uint32 */
-#define INODE_SIZE_OFF 48 /* uint64 */
-#define INODE_BLOCKS_OFF 56  /* uint32 */
+#define INODE_TYPE_OFF 0
+#define INODE_MODE_OFF 4
+#define INODE_NLINK_OFF 6
+#define INODE_UID_OFF 8
+#define INODE_GID_OFF 12
+#define INODE_RDEV_OFF 16
+#define INODE_ATIME_S_OFF 24
+#define INODE_ATIME_N_OFF 28
+#define INODE_MTIME_S_OFF 32
+#define INODE_MTIME_N_OFF 36
+#define INODE_CTIME_S_OFF 40
+#define INODE_CTIME_N_OFF 44
+#define INODE_SIZE_OFF 48
+#define INODE_BLOCKS_OFF 56
 #define INODE_CONTENTS_OFF 64
 #define INODE_NEXT_EXT_OFF 4092
 #define INODE_CONTENTS_LEN (INODE_NEXT_EXT_OFF - INODE_CONTENTS_OFF)
@@ -330,6 +328,12 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
             write16(blk, pos + DIRENT_LEN_OFF, (uint16_t)entry_len);
             write32(blk, pos + DIRENT_INODE_OFF, inode_block);
             memcpy(blk + pos + DIRENT_NAME_OFF, name, name_len);
+
+            /* mark next entry as end-of-directory if there is room */
+            if (pos + entry_len + 2 <= end) {
+                write16(blk, pos + entry_len, 0);
+            }
+
             writeblock(st->fd, blk, curr);
 
             /* update dir inode size and timpestamp */
@@ -362,6 +366,11 @@ static int add_dir_entry(struct fs_state *st, uint32_t dir_block, const char *na
     write16(new_blk, DEXT_CONTENTS_OFF + DIRENT_LEN_OFF, (uint16_t)entry_len);
     write32(new_blk, DEXT_CONTENTS_OFF + DIRENT_INODE_OFF, inode_block);
     memcpy(new_blk + DEXT_CONTENTS_OFF + DIRENT_NAME_OFF, name, name_len);
+
+    if (DEXT_CONTENTS_OFF + entry_len + 2 <= DEXT_NEXT_EXT_OFF) {
+        write16(new_blk, DEXT_CONTENTS_OFF + entry_len, 0);
+    }
+
     writeblock(st->fd, new_blk, new_blk_num);
 
     /* link prev to new extents */
@@ -430,9 +439,9 @@ static int fs_getattr(void *arg, uint32_t block_num, struct stat *stbuf) {
     memset(stbuf, 0, sizeof(struct stat));
 
     stbuf->st_mode = (mode_t)read16(buf, INODE_MODE_OFF);
-    stbuf->st_nlink  = (nlink_t)read16(buf, INODE_NLINK_OFF);
-    stbuf->st_uid = (uid_t)read16(buf, INODE_UID_OFF);
-    stbuf->st_gid = (gid_t)read16(buf, INODE_GID_OFF);
+    stbuf->st_nlink = (nlink_t)read16(buf, INODE_NLINK_OFF);
+    stbuf->st_uid = (uid_t)read32(buf, INODE_UID_OFF);
+    stbuf->st_gid = (gid_t)read32(buf, INODE_GID_OFF);
     stbuf->st_rdev = (dev_t)read32(buf, INODE_RDEV_OFF);
     stbuf->st_size = (off_t)read64(buf, INODE_SIZE_OFF);
     stbuf->st_blocks = (blkcnt_t)read32(buf, INODE_BLOCKS_OFF) * 8;
@@ -667,11 +676,11 @@ static int fs_chown(void *arg, uint32_t block_num, uid_t new_uid, gid_t new_gid)
     }
  
     if ((int)new_uid != -1) {
-        write16(buf, INODE_UID_OFF, (uint16_t)new_uid);
+        write32(buf, INODE_UID_OFF, (uint32_t)new_uid);
     }
 
     if ((int)new_gid != -1) {
-        write16(buf, INODE_GID_OFF, (uint16_t)new_gid);
+        write32(buf, INODE_GID_OFF, (uint32_t)new_gid);
     }
  
     struct timespec ts; 
@@ -770,7 +779,6 @@ static int fs_unlink(void *arg, uint32_t block_num, const char *name) {
         nlink--;
     }
 
-
     write16(buf, INODE_NLINK_OFF, nlink);
  
     struct timespec ts; 
@@ -804,8 +812,8 @@ static void init_inode(unsigned char *buf, mode_t mode, dev_t rdev, uid_t uid, g
     memset(buf, 0, BLOCK_SIZE);
     write32(buf, INODE_TYPE_OFF, TYPE_INODE);
     write16(buf, INODE_MODE_OFF, (uint16_t)mode);
-    write16(buf, INODE_UID_OFF, (uint16_t)uid);
-    write16(buf, INODE_GID_OFF, (uint16_t)gid);
+    write32(buf, INODE_UID_OFF, (uint32_t)uid);
+    write32(buf, INODE_GID_OFF, (uint32_t)gid);
     write32(buf, INODE_RDEV_OFF, (uint32_t)rdev);
     write32(buf, INODE_BLOCKS_OFF, 1);
  
@@ -823,17 +831,19 @@ static void init_inode(unsigned char *buf, mode_t mode, dev_t rdev, uid_t uid, g
 static int fs_mknod(void *arg, uint32_t parent_block, const char *name, mode_t new_mode, dev_t new_dev) {
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
- 
+
+    if (find_in_dir(st, parent_block, name) != 0) {
+        return -EEXIST;
+    }
 
     struct fuse_context *ctx = fuse_get_context();
     uid_t uid = ctx ? ctx->uid : 0;
     gid_t gid = ctx ? ctx->gid : 0;
- 
+
     uint32_t new_block = allocate_block(st);
     init_inode(buf, new_mode, new_dev, uid, gid);
     write16(buf, INODE_NLINK_OFF, 1);
     writeblock(st->fd, buf, new_block);
- 
 
     return add_dir_entry(st, parent_block, name, new_block);
 }
@@ -842,53 +852,62 @@ static int fs_mknod(void *arg, uint32_t parent_block, const char *name, mode_t n
 static int fs_symlink(void *arg, uint32_t parent_block, const char *name, const char *link_dest) {
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
- 
+
+    if (find_in_dir(st, parent_block, name) != 0) {
+        return -EEXIST;
+    }
 
     struct fuse_context *ctx = fuse_get_context();
     uid_t uid = ctx ? ctx->uid : 0;
     gid_t gid = ctx ? ctx->gid : 0;
- 
+
     int dest_len = (int)strlen(link_dest);
- 
+
+    if (dest_len > INODE_CONTENTS_LEN) {
+        return -ENAMETOOLONG;
+    }
+
     uint32_t new_block = allocate_block(st);
     init_inode(buf, S_IFLNK | 0777, 0, uid, gid);
     write16(buf, INODE_NLINK_OFF, 1);
     write64(buf, INODE_SIZE_OFF, (uint64_t)dest_len);
     memcpy(buf + INODE_CONTENTS_OFF, link_dest, dest_len);
     writeblock(st->fd, buf, new_block);
- 
+
     return add_dir_entry(st, parent_block, name, new_block);
 }
 
 static int fs_mkdir(void *arg, uint32_t parent_block, const char *name, mode_t new_mode) {
-    
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
     unsigned char parent_buf[BLOCK_SIZE];
- 
-    struct fuse_context *ctx = fuse_get_context();
 
+    if (find_in_dir(st, parent_block, name) != 0) {
+        return -EEXIST;
+    }
+
+    struct fuse_context *ctx = fuse_get_context();
     uid_t uid = ctx ? ctx->uid : 0;
     gid_t gid = ctx ? ctx->gid : 0;
- 
+
     uint32_t new_block = allocate_block(st);
     init_inode(buf, S_IFDIR | (new_mode & 07777), 0, uid, gid);
     write16(buf, INODE_NLINK_OFF, 2);
     write64(buf, INODE_SIZE_OFF, 0);
     writeblock(st->fd, buf, new_block);
- 
-    /* increment parent nlink */
 
     readblock(st->fd, parent_buf, parent_block);
     uint16_t pnlink = read16(parent_buf, INODE_NLINK_OFF);
     write16(parent_buf, INODE_NLINK_OFF, pnlink + 1);
 
-    struct timespec ts; 
+    struct timespec ts;
     get_current_time(&ts);
     write32(parent_buf, INODE_CTIME_S_OFF, (uint32_t)ts.tv_sec);
     write32(parent_buf, INODE_CTIME_N_OFF, (uint32_t)ts.tv_nsec);
+    write32(parent_buf, INODE_MTIME_S_OFF, (uint32_t)ts.tv_sec);
+    write32(parent_buf, INODE_MTIME_N_OFF, (uint32_t)ts.tv_nsec);
     writeblock(st->fd, parent_buf, parent_block);
- 
+
     return add_dir_entry(st, parent_block, name, new_block);
 }
 
@@ -896,33 +915,46 @@ static int fs_mkdir(void *arg, uint32_t parent_block, const char *name, mode_t n
 static int fs_link(void *arg, uint32_t parent_block, const char *name, uint32_t dest_block) {
     struct fs_state *st = (struct fs_state *)arg;
     unsigned char buf[BLOCK_SIZE];
- 
+
+    if (find_in_dir(st, parent_block, name) != 0) {
+        return -EEXIST;
+    }
+
     readblock(st->fd, buf, dest_block);
     if (read32(buf, INODE_TYPE_OFF) != TYPE_INODE) {
         return -ENOENT;
     }
- 
+
+    if (S_ISDIR(read16(buf, INODE_MODE_OFF))) {
+        return -EPERM;
+    }
+
     uint16_t nlink = read16(buf, INODE_NLINK_OFF);
     write16(buf, INODE_NLINK_OFF, nlink + 1);
 
-    struct timespec ts; 
+    struct timespec ts;
     get_current_time(&ts);
     write32(buf, INODE_CTIME_S_OFF, (uint32_t)ts.tv_sec);
     write32(buf, INODE_CTIME_N_OFF, (uint32_t)ts.tv_nsec);
     writeblock(st->fd, buf, dest_block);
- 
+
     return add_dir_entry(st, parent_block, name, dest_block);
 }
 
 
 static int fs_rename(void *arg, uint32_t old_parent, const char *old_name, uint32_t new_parent, const char *new_name) {
     struct fs_state *st = (struct fs_state *)arg;
- 
+
     uint32_t target = find_in_dir(st, old_parent, old_name);
     if (target == 0) {
         return -ENOENT;
     }
- 
+
+    uint32_t existing = find_in_dir(st, new_parent, new_name);
+    if (existing != 0) {
+        return -EEXIST;
+    }
+
     int res = add_dir_entry(st, new_parent, new_name, target);
     if (res < 0) {
         return res;
